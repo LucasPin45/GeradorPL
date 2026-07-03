@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
+import re
 import uuid
 import streamlit as st
 
 from gerador import (
     Dispositivo, TIPOS_ESTRUTURA, TIPOS_CONTEUDO, ROTULOS, PROFUNDIDADE,
-    processar_dispositivos, gerar_docx,
+    processar_dispositivos, gerar_docx, gerar_docx_requerimento,
+    ementa_requerimento_urgencia,
 )
 
-st.set_page_config(page_title="Gerador de PL — Gabinete Zanatta", page_icon="📜", layout="wide")
+st.set_page_config(page_title="Gerador de Documentos — Gabinete Zanatta", page_icon="📜", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Conteúdo explicativo em linguagem simples (para quem não é da área jurídica)
@@ -71,6 +73,8 @@ ICONE = {
 }
 
 TIPO_OPCOES = TIPOS_ESTRUTURA + TIPOS_CONTEUDO
+
+SIGLAS_COMUNS = ["PL", "PLP", "PEC", "PDL", "PRC", "MPV", "REQ", "INC", "Outro"]
 
 # ---------------------------------------------------------------------------
 # CSS
@@ -138,8 +142,12 @@ def sugerir_proximo_tipo():
     }.get(ultimo, "artigo")
 
 
+def negrito_html(texto: str) -> str:
+    return re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', texto)
+
+
 # ---------------------------------------------------------------------------
-# Sidebar — dados gerais
+# Sidebar — dados gerais (comuns a todos os módulos)
 # ---------------------------------------------------------------------------
 st.sidebar.header("① Dados gerais")
 
@@ -149,11 +157,12 @@ autor_nome = st.sidebar.text_input("Nome do autor(a)", value="Júlia Zanatta")
 autor_partido_uf = st.sidebar.text_input("Partido/UF", value="PL/SC")
 
 autor_prefixo = "Da Sra." if genero == "Deputada" else "Do Sr."
-autor_prefixo_assinatura = genero
+autor_prefixo_assinatura_pl = genero
+autor_prefixo_assinatura_req = f"{genero} Federal"
 
 st.sidebar.divider()
 conector = st.sidebar.selectbox(
-    "Conectivo no penúltimo item de uma lista",
+    "Conectivo no penúltimo item de uma lista (só afeta o módulo PL)",
     options=["e", "ou", "nenhum"],
     format_func=lambda x: {"e": '"; e"  (regra geral)', "ou": '"; ou"  (alternativas)', "nenhum": 'apenas ";"'}[x],
     help="Usado automaticamente no penúltimo Inciso/Alínea/Item de uma lista. Ex.: 'I – ...; II – ...; e III – ...'.",
@@ -162,17 +171,29 @@ conector = st.sidebar.selectbox(
 st.sidebar.divider()
 st.sidebar.caption(
     "O Word gerado usa a mesma fonte, margens, cabeçalho e rodapé do modelo "
-    "oficial do gabinete. A numeração segue a Lei Complementar nº 95/1998."
+    "oficial do gabinete."
 )
 
 # ---------------------------------------------------------------------------
-# Corpo principal
+# Cabeçalho + seletor de módulo
 # ---------------------------------------------------------------------------
-st.title("📜 Gerador de Projeto de Lei")
-st.caption("Preencha em linguagem simples — a numeração e a formatação técnica ficam por conta do sistema.")
+st.title("📜 Gerador de Documentos Legislativos")
+st.caption("Preencha em linguagem simples — a formatação técnica fica por conta do sistema.")
 
-with st.expander("💡 Guia rápido — o que é cada coisa?"):
-    st.markdown("""
+tipo_documento = st.radio(
+    "Tipo de documento",
+    ["Projeto de Lei (PL)", "Requerimento de Urgência"],
+    horizontal=True,
+)
+st.divider()
+
+# ===========================================================================
+# MÓDULO 1 — PROJETO DE LEI
+# ===========================================================================
+if tipo_documento == "Projeto de Lei (PL)":
+
+    with st.expander("💡 Guia rápido — o que é cada coisa?"):
+        st.markdown("""
 Pense assim, sem se preocupar com os nomes jurídicos:
 
 - **Artigo** = uma regra. É a espinha dorsal do texto — cada uma traz um comando ou determinação.
@@ -186,229 +207,334 @@ Você **não digita numeração nem pontuação final** — o sistema calcula "A
 e o "." ou ";" no fim de cada frase automaticamente.
 """)
 
-col_esq, col_dir = st.columns([1, 1], gap="large")
+    col_esq, col_dir = st.columns([1, 1], gap="large")
 
-# ===========================================================================
-# COLUNA ESQUERDA — construção do texto
-# ===========================================================================
-with col_esq:
-    st.subheader("② Ementa")
-    ementa = st.text_area(
-        "O resumo do que a lei faz, em uma frase",
-        height=80,
-        placeholder="Institui o Programa XYZ e dá outras providências, e altera "
-                    "**o art. 5º da Lei nº 12.345, de 1º de janeiro de 2020.**",
-        label_visibility="collapsed",
-    )
-    st.caption("Dica: use **duplo-asterisco** ao redor de um trecho para deixá-lo em negrito "
-               "(comum ao citar a lei que está sendo alterada).")
-
-    st.divider()
-    st.subheader("③ Dispositivos")
-    st.caption("Adicione na ordem em que devem aparecer no texto final.")
-
-    if not st.session_state.dispositivos:
-        if st.button("🚀 Começar com uma estrutura básica (Capítulo + 3 artigos)"):
-            base = [
-                {"uid": novo_uid(), "tipo": "capitulo", "texto": "", "titulo_estrutura": "DISPOSIÇÕES GERAIS",
-                 "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
-                {"uid": novo_uid(), "tipo": "artigo",
-                 "texto": "[Descreva aqui o objetivo principal desta Lei]",
-                 "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
-                {"uid": novo_uid(), "tipo": "artigo",
-                 "texto": "[Se necessário, descreva obrigações, prazos ou penalidades]",
-                 "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
-                {"uid": novo_uid(), "tipo": "artigo", "texto": "Esta Lei entra em vigor na data de sua publicação",
-                 "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
-            ]
-            st.session_state.dispositivos.extend(base)
-            st.rerun()
-
-    with st.container(border=True):
-        tipo_default = sugerir_proximo_tipo()
-        tipo_key = f"tipo_select_{len(st.session_state.dispositivos)}"
-        tipo = st.selectbox(
-            "O que você quer adicionar agora?",
-            TIPO_OPCOES,
-            index=TIPO_OPCOES.index(tipo_default),
-            format_func=lambda t: TIPO_INFO[t]["label"],
-            key=tipo_key,
+    # -----------------------------------------------------------------
+    # Coluna esquerda — construção do texto
+    # -----------------------------------------------------------------
+    with col_esq:
+        st.subheader("② Ementa")
+        ementa = st.text_area(
+            "O resumo do que a lei faz, em uma frase",
+            height=80,
+            placeholder="Institui o Programa XYZ e dá outras providências, e altera "
+                        "**o art. 5º da Lei nº 12.345, de 1º de janeiro de 2020.**",
+            label_visibility="collapsed",
         )
-        st.info(TIPO_INFO[tipo]["explicacao"], icon="ℹ️")
+        st.caption("Dica: use **duplo-asterisco** ao redor de um trecho para deixá-lo em negrito "
+                   "(comum ao citar a lei que está sendo alterada).")
 
-        with st.form(f"add_form_{tipo_key}", clear_on_submit=True):
-            if tipo in TIPOS_ESTRUTURA:
-                titulo_estrutura = st.text_input(
-                    "Título deste bloco", placeholder=TIPO_INFO[tipo]["placeholder_bloco"]
-                )
-                texto = ""
-            else:
-                texto = st.text_area(
-                    "Texto (sem numeração e, se possível, sem pontuação final)",
-                    placeholder=TIPO_INFO[tipo]["placeholder_texto"],
-                    height=100 if tipo in ("artigo", "paragrafo") else 70,
-                )
-                titulo_estrutura = ""
+        st.divider()
+        st.subheader("③ Dispositivos")
+        st.caption("Adicione na ordem em que devem aparecer no texto final.")
 
-            c1, c2 = st.columns(2)
-            with c1:
-                paragrafo_unico_opt = "Automático"
-                if tipo == "paragrafo":
-                    paragrafo_unico_opt = st.selectbox(
-                        "É o único parágrafo deste artigo?", ["Automático", "Sim", "Não"],
-                        help="No automático, o sistema detecta sozinho e escreve \"Parágrafo único.\" quando fizer sentido.",
+        if not st.session_state.dispositivos:
+            if st.button("🚀 Começar com uma estrutura básica (Capítulo + 3 artigos)"):
+                base = [
+                    {"uid": novo_uid(), "tipo": "capitulo", "texto": "", "titulo_estrutura": "DISPOSIÇÕES GERAIS",
+                     "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
+                    {"uid": novo_uid(), "tipo": "artigo",
+                     "texto": "[Descreva aqui o objetivo principal desta Lei]",
+                     "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
+                    {"uid": novo_uid(), "tipo": "artigo",
+                     "texto": "[Se necessário, descreva obrigações, prazos ou penalidades]",
+                     "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
+                    {"uid": novo_uid(), "tipo": "artigo", "texto": "Esta Lei entra em vigor na data de sua publicação",
+                     "titulo_estrutura": "", "paragrafo_unico_forcado": None, "pontuacao_automatica": True},
+                ]
+                st.session_state.dispositivos.extend(base)
+                st.rerun()
+
+        with st.container(border=True):
+            tipo_default = sugerir_proximo_tipo()
+            tipo_key = f"tipo_select_{len(st.session_state.dispositivos)}"
+            tipo = st.selectbox(
+                "O que você quer adicionar agora?",
+                TIPO_OPCOES,
+                index=TIPO_OPCOES.index(tipo_default),
+                format_func=lambda t: TIPO_INFO[t]["label"],
+                key=tipo_key,
+            )
+            st.info(TIPO_INFO[tipo]["explicacao"], icon="ℹ️")
+
+            with st.form(f"add_form_{tipo_key}", clear_on_submit=True):
+                if tipo in TIPOS_ESTRUTURA:
+                    titulo_estrutura = st.text_input(
+                        "Título deste bloco", placeholder=TIPO_INFO[tipo]["placeholder_bloco"]
                     )
-            with c2:
-                pontuacao_automatica = st.checkbox(
-                    "Pontuação automática", value=True,
-                    help="Desmarque se preferir digitar você mesmo(a) o ponto final ou o ';' no fim do texto.",
-                )
-
-            enviado = st.form_submit_button("➕ Adicionar", use_container_width=True, type="primary")
-            if enviado:
-                if tipo in TIPOS_ESTRUTURA and not titulo_estrutura.strip():
-                    st.warning("Escreva o título deste bloco antes de adicionar.")
-                elif tipo not in TIPOS_ESTRUTURA and not texto.strip():
-                    st.warning("Escreva o texto antes de adicionar.")
+                    texto = ""
                 else:
-                    par_unico_forcado = {"Sim": True, "Não": False}.get(paragrafo_unico_opt)
-                    st.session_state.dispositivos.append({
-                        "uid": novo_uid(), "tipo": tipo, "texto": texto.strip(),
-                        "titulo_estrutura": titulo_estrutura.strip(),
-                        "paragrafo_unico_forcado": par_unico_forcado,
-                        "pontuacao_automatica": pontuacao_automatica,
-                    })
-                    st.rerun()
+                    texto = st.text_area(
+                        "Texto (sem numeração e, se possível, sem pontuação final)",
+                        placeholder=TIPO_INFO[tipo]["placeholder_texto"],
+                        height=100 if tipo in ("artigo", "paragrafo") else 70,
+                    )
+                    titulo_estrutura = ""
 
-    if st.session_state.dispositivos:
-        st.markdown("##### Já adicionados")
-        for i, d in enumerate(st.session_state.dispositivos):
-            depth = PROFUNDIDADE[d["tipo"]]
-            indent = "\u00A0\u00A0\u00A0\u00A0" * depth
-            preview_txt = d["titulo_estrutura"] if d["tipo"] in TIPOS_ESTRUTURA else d["texto"]
-            preview_txt = (preview_txt[:70] + "…") if len(preview_txt) > 70 else preview_txt
-            resumo = f"{indent}{ICONE[d['tipo']]} **{ROTULOS[d['tipo']]}** — {preview_txt or '_(vazio)_'}"
+                c1, c2 = st.columns(2)
+                with c1:
+                    paragrafo_unico_opt = "Automático"
+                    if tipo == "paragrafo":
+                        paragrafo_unico_opt = st.selectbox(
+                            "É o único parágrafo deste artigo?", ["Automático", "Sim", "Não"],
+                            help="No automático, o sistema detecta sozinho e escreve \"Parágrafo único.\" quando fizer sentido.",
+                        )
+                with c2:
+                    pontuacao_automatica = st.checkbox(
+                        "Pontuação automática", value=True,
+                        help="Desmarque se preferir digitar você mesmo(a) o ponto final ou o ';' no fim do texto.",
+                    )
 
-            with st.expander(resumo, expanded=(st.session_state.editando_uid == d["uid"])):
-                bcol1, bcol2, bcol3, bcol4 = st.columns([1, 1, 1, 2])
-                if bcol1.button("↑ Subir", key=f"up_{d['uid']}", disabled=(i == 0)):
-                    st.session_state.dispositivos[i - 1], st.session_state.dispositivos[i] = (
-                        st.session_state.dispositivos[i], st.session_state.dispositivos[i - 1])
-                    st.rerun()
-                if bcol2.button("↓ Descer", key=f"down_{d['uid']}", disabled=(i == len(st.session_state.dispositivos) - 1)):
-                    st.session_state.dispositivos[i + 1], st.session_state.dispositivos[i] = (
-                        st.session_state.dispositivos[i], st.session_state.dispositivos[i + 1])
-                    st.rerun()
-                if bcol3.button("🗑 Excluir", key=f"del_{d['uid']}"):
-                    st.session_state.dispositivos.pop(i)
-                    st.rerun()
+                enviado = st.form_submit_button("➕ Adicionar", use_container_width=True, type="primary")
+                if enviado:
+                    if tipo in TIPOS_ESTRUTURA and not titulo_estrutura.strip():
+                        st.warning("Escreva o título deste bloco antes de adicionar.")
+                    elif tipo not in TIPOS_ESTRUTURA and not texto.strip():
+                        st.warning("Escreva o texto antes de adicionar.")
+                    else:
+                        par_unico_forcado = {"Sim": True, "Não": False}.get(paragrafo_unico_opt)
+                        st.session_state.dispositivos.append({
+                            "uid": novo_uid(), "tipo": tipo, "texto": texto.strip(),
+                            "titulo_estrutura": titulo_estrutura.strip(),
+                            "paragrafo_unico_forcado": par_unico_forcado,
+                            "pontuacao_automatica": pontuacao_automatica,
+                        })
+                        st.rerun()
 
-                st.markdown("**Editar:**")
-                if d["tipo"] in TIPOS_ESTRUTURA:
-                    novo_titulo = st.text_input("Título do bloco", value=d["titulo_estrutura"], key=f"edit_tit_{d['uid']}")
-                    novo_texto = ""
-                else:
-                    novo_texto = st.text_area("Texto", value=d["texto"], key=f"edit_txt_{d['uid']}", height=90)
-                    novo_titulo = ""
-                if st.button("💾 Salvar alterações", key=f"save_{d['uid']}"):
-                    d["titulo_estrutura"] = novo_titulo.strip()
-                    d["texto"] = novo_texto.strip()
-                    st.rerun()
+        if st.session_state.dispositivos:
+            st.markdown("##### Já adicionados")
+            for i, d in enumerate(st.session_state.dispositivos):
+                depth = PROFUNDIDADE[d["tipo"]]
+                indent = "\u00A0\u00A0\u00A0\u00A0" * depth
+                preview_txt = d["titulo_estrutura"] if d["tipo"] in TIPOS_ESTRUTURA else d["texto"]
+                preview_txt = (preview_txt[:70] + "…") if len(preview_txt) > 70 else preview_txt
+                resumo = f"{indent}{ICONE[d['tipo']]} **{ROTULOS[d['tipo']]}** — {preview_txt or '_(vazio)_'}"
 
-        if st.button("Limpar todos os dispositivos"):
-            st.session_state.dispositivos = []
-            st.rerun()
+                with st.expander(resumo, expanded=(st.session_state.editando_uid == d["uid"])):
+                    bcol1, bcol2, bcol3, bcol4 = st.columns([1, 1, 1, 2])
+                    if bcol1.button("↑ Subir", key=f"up_{d['uid']}", disabled=(i == 0)):
+                        st.session_state.dispositivos[i - 1], st.session_state.dispositivos[i] = (
+                            st.session_state.dispositivos[i], st.session_state.dispositivos[i - 1])
+                        st.rerun()
+                    if bcol2.button("↓ Descer", key=f"down_{d['uid']}", disabled=(i == len(st.session_state.dispositivos) - 1)):
+                        st.session_state.dispositivos[i + 1], st.session_state.dispositivos[i] = (
+                            st.session_state.dispositivos[i], st.session_state.dispositivos[i + 1])
+                        st.rerun()
+                    if bcol3.button("🗑 Excluir", key=f"del_{d['uid']}"):
+                        st.session_state.dispositivos.pop(i)
+                        st.rerun()
+
+                    st.markdown("**Editar:**")
+                    if d["tipo"] in TIPOS_ESTRUTURA:
+                        novo_titulo = st.text_input("Título do bloco", value=d["titulo_estrutura"], key=f"edit_tit_{d['uid']}")
+                        novo_texto = ""
+                    else:
+                        novo_texto = st.text_area("Texto", value=d["texto"], key=f"edit_txt_{d['uid']}", height=90)
+                        novo_titulo = ""
+                    if st.button("💾 Salvar alterações", key=f"save_{d['uid']}"):
+                        d["titulo_estrutura"] = novo_titulo.strip()
+                        d["texto"] = novo_texto.strip()
+                        st.rerun()
+
+            if st.button("Limpar todos os dispositivos"):
+                st.session_state.dispositivos = []
+                st.rerun()
+
+        st.divider()
+        st.subheader("④ Justificação")
+        justificativa = st.text_area(
+            "Por que essa lei é necessária (separe parágrafos com uma linha em branco)",
+            height=180,
+            placeholder="A situação atual apresenta o seguinte problema...\n\nA presente proposição busca resolver isso por meio de...",
+            label_visibility="collapsed",
+        )
+        local_data = st.text_input("Fecho", value="Sala das Sessões, na data de sua assinatura.", key="fecho_pl")
+
+    # -----------------------------------------------------------------
+    # Coluna direita — pré-visualização
+    # -----------------------------------------------------------------
+    with col_dir:
+        st.subheader("Pré-visualização")
+
+        objetos = [dispositivo_para_objeto(d) for d in st.session_state.dispositivos]
+        processados = processar_dispositivos(objetos, conector) if objetos else []
+
+        html = ['<div class="paper">']
+        html.append(f'<div class="titulo-pl">PROJETO DE LEI Nº _____, DE {ano or "____"}</div>')
+        html.append(f'<div class="autor-pl">({autor_prefixo} {autor_nome or "..."})</div>')
+
+        if ementa.strip():
+            html.append(f'<div class="ementa">{negrito_html(ementa.strip())}</div>')
+        else:
+            html.append('<div class="ementa" style="color:#9ca3af;">(a ementa aparecerá aqui)</div>')
+
+        html.append('<div class="decreta">O Congresso Nacional decreta:</div>')
+
+        if not processados:
+            html.append('<p style="color:#9ca3af;">(os dispositivos aparecerão aqui conforme você for adicionando)</p>')
+
+        for item in processados:
+            if item["tipo"] in TIPOS_ESTRUTURA:
+                css_class = "heading" if item["tipo"] in ("titulo", "capitulo") else "secao-h"
+                html.append(f'<div class="{css_class}">{item["prefixo"]}</div>')
+                if item["titulo_estrutura"]:
+                    html.append(f'<div class="{css_class}">{item["titulo_estrutura"]}</div>')
+            else:
+                corpo = negrito_html(f'{item["prefixo"]} {item["texto"]}')
+                html.append(f'<div class="conteudo">{corpo}</div>')
+
+        if justificativa.strip():
+            html.append('<div class="justif-h">JUSTIFICAÇÃO</div>')
+            for par in [p.strip() for p in justificativa.split("\n\n") if p.strip()]:
+                html.append(f'<div class="justif-p">{par.replace(chr(10), " ")}</div>')
+
+        html.append(f'<div class="fecho">{local_data or "Sala das Sessões, na data de sua assinatura."}</div>')
+        html.append(f'<div class="assinatura">{autor_prefixo_assinatura_pl} {(autor_nome or "").upper()}</div>')
+        html.append(f'<div class="partido">{autor_partido_uf}</div>')
+        html.append('</div>')
+
+        st.markdown("".join(html), unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("④ Justificação")
-    justificativa = st.text_area(
-        "Por que essa lei é necessária (separe parágrafos com uma linha em branco)",
-        height=180,
-        placeholder="A situação atual apresenta o seguinte problema...\n\nA presente proposição busca resolver isso por meio de...",
-        label_visibility="collapsed",
-    )
-    local_data = st.text_input("Fecho", value="Sala das Sessões, na data de sua assinatura.")
+    gerar_pl = st.button("📄 Gerar Word (.docx)", type="primary", use_container_width=True, key="gerar_pl")
 
-# ===========================================================================
-# COLUNA DIREITA — pré-visualização em formato de documento
-# ===========================================================================
-with col_dir:
-    st.subheader("Pré-visualização")
-
-    objetos = [dispositivo_para_objeto(d) for d in st.session_state.dispositivos]
-    processados = processar_dispositivos(objetos, conector) if objetos else []
-
-    import re as _re
-
-    html = ['<div class="paper">']
-    html.append(f'<div class="titulo-pl">PROJETO DE LEI Nº _____, DE {ano or "____"}</div>')
-    html.append(f'<div class="autor-pl">({autor_prefixo} {autor_nome or "..."})</div>')
-
-    if ementa.strip():
-        ementa_html = _re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', ementa.strip())
-        html.append(f'<div class="ementa">{ementa_html}</div>')
-    else:
-        html.append('<div class="ementa" style="color:#9ca3af;">(a ementa aparecerá aqui)</div>')
-
-    html.append('<div class="decreta">O Congresso Nacional decreta:</div>')
-
-    if not processados:
-        html.append('<p style="color:#9ca3af;">(os dispositivos aparecerão aqui conforme você for adicionando)</p>')
-
-    for item in processados:
-        if item["tipo"] in TIPOS_ESTRUTURA:
-            css_class = "heading" if item["tipo"] in ("titulo", "capitulo") else "secao-h"
-            html.append(f'<div class="{css_class}">{item["prefixo"]}</div>')
-            if item["titulo_estrutura"]:
-                html.append(f'<div class="{css_class}">{item["titulo_estrutura"]}</div>')
+    if gerar_pl:
+        if not ementa.strip():
+            st.error("Preencha a ementa antes de gerar o documento.")
+        elif not st.session_state.dispositivos:
+            st.error("Adicione ao menos um dispositivo (ex.: um Artigo) antes de gerar o documento.")
         else:
-            corpo = _re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', f'{item["prefixo"]} {item["texto"]}')
-            html.append(f'<div class="conteudo">{corpo}</div>')
+            dados = {
+                "ano": ano.strip() or "2026",
+                "ementa": ementa.strip(),
+                "autor_nome": autor_nome.strip(),
+                "autor_prefixo": autor_prefixo,
+                "autor_prefixo_assinatura": autor_prefixo_assinatura_pl,
+                "autor_partido_uf": autor_partido_uf.strip(),
+                "dispositivos": [dispositivo_para_objeto(d) for d in st.session_state.dispositivos],
+                "justificativa": justificativa,
+                "local_data": local_data.strip(),
+                "conector": conector,
+            }
+            try:
+                docx_bytes = gerar_docx(dados)
+                st.success("Documento gerado com sucesso!")
+                st.download_button(
+                    "⬇️ Baixar PL.docx", data=docx_bytes,
+                    file_name=f"PL_{(autor_nome or 'PL').replace(' ', '_')}_{ano}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Erro ao gerar o documento: {e}")
 
-    if justificativa.strip():
-        html.append('<div class="justif-h">JUSTIFICAÇÃO</div>')
-        for par in [p.strip() for p in justificativa.split("\n\n") if p.strip()]:
-            html.append(f'<div class="justif-p">{par.replace(chr(10), " ")}</div>')
+# ===========================================================================
+# MÓDULO 2 — REQUERIMENTO DE URGÊNCIA
+# ===========================================================================
+else:
+    with st.expander("💡 Guia rápido"):
+        st.markdown("""
+Esse módulo gera o requerimento padrão de urgência para apreciação de uma matéria
+(PL, PLP, PEC, PDL...), nos termos do art. 154 ou 155 do Regimento Interno da
+Câmara dos Deputados (RICD). Você só preenche os espaços em branco abaixo — a
+**ementa é montada sozinha**, no mesmo formato usado nos Projetos de Lei:
 
-    html.append(f'<div class="fecho">{local_data or "Sala das Sessões, na data de sua assinatura."}</div>')
-    html.append(f'<div class="assinatura">{autor_prefixo_assinatura} {(autor_nome or "").upper()}</div>')
-    html.append(f'<div class="partido">{autor_partido_uf}</div>')
-    html.append('</div>')
+> Requeremos, nos termos do art. **_____** [154 ou 155] do Regimento Interno da
+> Câmara dos Deputados, urgência para apreciação do **_____** [sigla] **_____**
+> [número/ano], que "**_____**" [ementa da matéria].
 
-    st.markdown("".join(html), unsafe_allow_html=True)
+**Confirme com a assessoria legislativa qual artigo (154 ou 155) se aplica ao caso
+concreto** antes de protocolar — a escolha depende do rito de urgência pretendido.
+""")
 
-# ---------------------------------------------------------------------------
-# Geração do .docx
-# ---------------------------------------------------------------------------
-st.divider()
-gerar = st.button("📄 Gerar Word (.docx)", type="primary", use_container_width=True)
+    col_esq, col_dir = st.columns([1, 1], gap="large")
 
-if gerar:
-    if not ementa.strip():
-        st.error("Preencha a ementa antes de gerar o documento.")
-    elif not st.session_state.dispositivos:
-        st.error("Adicione ao menos um dispositivo (ex.: um Artigo) antes de gerar o documento.")
-    else:
-        dados = {
-            "ano": ano.strip() or "2026",
-            "ementa": ementa.strip(),
-            "autor_nome": autor_nome.strip(),
-            "autor_prefixo": autor_prefixo,
-            "autor_prefixo_assinatura": autor_prefixo_assinatura,
-            "autor_partido_uf": autor_partido_uf.strip(),
-            "dispositivos": [dispositivo_para_objeto(d) for d in st.session_state.dispositivos],
-            "justificativa": justificativa,
-            "local_data": local_data.strip(),
-            "conector": conector,
-        }
-        try:
-            docx_bytes = gerar_docx(dados)
-            st.success("Documento gerado com sucesso!")
-            st.download_button(
-                "⬇️ Baixar PL.docx", data=docx_bytes,
-                file_name=f"PL_{(autor_nome or 'PL').replace(' ', '_')}_{ano}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-            )
-        except Exception as e:
-            st.error(f"Erro ao gerar o documento: {e}")
+    with col_esq:
+        st.subheader("② Dados do requerimento")
+
+        artigo_ricd = st.radio(
+            "Fundamento regimental", ["154", "155"], horizontal=True,
+            format_func=lambda x: f"Art. {x} do RICD",
+        )
+
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            sigla_materia = st.selectbox("Sigla da matéria", SIGLAS_COMUNS, index=0)
+            if sigla_materia == "Outro":
+                sigla_materia = st.text_input("Digite a sigla", value="")
+        with c2:
+            numero_materia = st.text_input("Número/ano da matéria", placeholder="2.548/2025")
+
+        ementa_materia = st.text_area(
+            "Ementa oficial da matéria (cole exatamente como está registrada — "
+            "vai aparecer entre aspas, sem precisar digitar as aspas)",
+            height=110,
+            placeholder='Altera a Lei nº 13.465, de 11 de julho de 2017, para garantir o direito de '
+                        'propriedade dos moradores ocupantes anteriormente à decretação de Área de '
+                        'Proteção Ambiental (APA), e dá outras providências.',
+        )
+
+        fecho_req = st.text_input(
+            "Fecho", value="Sala das Sessões, na data de sua assinatura", key="fecho_req"
+        )
+
+    with col_dir:
+        st.subheader("Pré-visualização")
+
+        numero_fmt = numero_materia.strip() or "____/____"
+        ementa_fmt = ementa_materia.strip() or "(a ementa da matéria aparecerá aqui)"
+        ementa_req = ementa_requerimento_urgencia(artigo_ricd, sigla_materia, numero_materia)
+        texto_requerimento = (
+            f'Requeremos, nos termos do art. {artigo_ricd} do Regimento Interno da Câmara '
+            f'dos Deputados, urgência para apreciação do {sigla_materia} {numero_fmt}, que '
+            f'"{ementa_fmt}".'
+        )
+
+        html = ['<div class="paper">']
+        html.append(f'<div class="titulo-pl">REQUERIMENTO Nº _____ DE {ano or "____"}</div>')
+        html.append('<div style="height:14px;"></div>')
+        html.append(f'<div class="ementa">{ementa_req}</div>')
+        html.append('<div style="height:14px;"></div>')
+        html.append('<div class="conteudo" style="text-indent:0;">Senhor Presidente,</div>')
+        html.append(f'<div class="conteudo">{texto_requerimento}</div>')
+        html.append('<div style="height:40px;"></div>')
+        html.append(f'<div class="fecho">{fecho_req or "Sala das Sessões, na data de sua assinatura"}</div>')
+        html.append(f'<div class="assinatura">{autor_prefixo_assinatura_req} {autor_nome or "..."}</div>')
+        html.append(f'<div class="partido">({autor_partido_uf})</div>')
+        html.append('</div>')
+
+        st.markdown("".join(html), unsafe_allow_html=True)
+
+        st.caption(f"📝 Ementa gerada automaticamente: *{ementa_req}*")
+
+    st.divider()
+    gerar_req = st.button("📄 Gerar Word (.docx)", type="primary", use_container_width=True, key="gerar_req")
+
+    if gerar_req:
+        if not numero_materia.strip():
+            st.error("Preencha o número/ano da matéria antes de gerar o documento.")
+        elif not ementa_materia.strip():
+            st.error("Preencha a ementa da matéria antes de gerar o documento.")
+        else:
+            dados = {
+                "ano": ano.strip() or "2026",
+                "artigo_ricd": artigo_ricd,
+                "sigla_materia": sigla_materia.strip(),
+                "numero_materia": numero_materia.strip(),
+                "ementa_materia": ementa_materia.strip(),
+                "autor_nome": autor_nome.strip(),
+                "autor_prefixo_assinatura": autor_prefixo_assinatura_req,
+                "autor_partido_uf": autor_partido_uf.strip(),
+                "fecho": fecho_req.strip(),
+            }
+            try:
+                docx_bytes = gerar_docx_requerimento(dados)
+                st.success("Documento gerado com sucesso!")
+                st.download_button(
+                    "⬇️ Baixar Requerimento.docx", data=docx_bytes,
+                    file_name=f"REQ_Urgencia_{sigla_materia}_{numero_materia.replace('/', '-')}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Erro ao gerar o documento: {e}")

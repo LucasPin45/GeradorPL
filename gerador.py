@@ -423,7 +423,9 @@ def _extrair_prefixo_sufixo(document_xml: str):
     return prefixo, sect_xml, sufixo
 
 
-def gerar_docx(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
+def _empacotar(corpo_xml: str, template_path: str = TEMPLATE_PATH) -> bytes:
+    """Reaproveita estilos/cabeçalho/rodapé/sectPr do template do gabinete,
+    substituindo apenas o corpo do documento."""
     with open(template_path, "rb") as f:
         template_bytes = f.read()
 
@@ -431,8 +433,7 @@ def gerar_docx(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
         document_xml = zin.read("word/document.xml").decode("utf-8")
         prefixo, sect_xml, sufixo = _extrair_prefixo_sufixo(document_xml)
 
-        corpo = montar_paragrafos_corpo(dados)
-        novo_document_xml = prefixo + corpo + sect_xml + sufixo
+        novo_document_xml = prefixo + corpo_xml + sect_xml + sufixo
 
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -443,3 +444,66 @@ def gerar_docx(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
                 zout.writestr(item, data)
 
     return buffer.getvalue()
+
+
+def gerar_docx(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
+    """Gera o .docx de um Projeto de Lei."""
+    corpo = montar_paragrafos_corpo(dados)
+    return _empacotar(corpo, template_path)
+
+
+# ---------------------------------------------------------------------------
+# Módulo: Requerimento de Urgência (art. 154/155 do RICD)
+# ---------------------------------------------------------------------------
+
+def ementa_requerimento_urgencia(artigo_ricd: str, sigla_materia: str, numero_materia: str) -> str:
+    """Ementa padrão, preenchida automaticamente a partir dos campos do
+    formulário — mesmo texto que aparece no bloco de ementa, no estilo PL."""
+    numero = numero_materia.strip() or "____/____"
+    return (
+        f"Requer, nos termos do art. {artigo_ricd} do Regimento Interno da "
+        f"Câmara dos Deputados, urgência para apreciação do {sigla_materia} {numero}."
+    )
+
+
+def montar_paragrafos_corpo_requerimento(dados: dict) -> str:
+    xml = []
+
+    ano = dados.get("ano", "2026")
+    artigo = dados.get("artigo_ricd", "155")
+    sigla = dados.get("sigla_materia", "PL")
+    numero = dados.get("numero_materia", "").strip()
+    ementa_materia = dados.get("ementa_materia", "").strip()
+
+    xml.append(p_center_bold(f"REQUERIMENTO Nº _____ DE {ano}"))
+    xml.append(p_blank())
+    xml.append(p_blank())
+    xml.append(p_ementa(ementa_requerimento_urgencia(artigo, sigla, numero)))
+    xml.append(p_blank())
+    xml.append(p_blank())
+    xml.append(p_conteudo("", "Senhor Presidente,"))
+    xml.append(p_blank())
+
+    texto = (
+        f"Requeremos, nos termos do art. {artigo} do Regimento Interno da Câmara "
+        f"dos Deputados, urgência para apreciação do {sigla} {numero}, que "
+        f'"{ementa_materia}".'
+    )
+    xml.append(p_conteudo("", texto))
+
+    xml.append(p_blank())
+    xml.append(p_blank())
+    xml.append(p_blank())
+
+    xml.append(p_center(dados.get("fecho", "Sala das Sessões, na data de sua assinatura")))
+    xml.append(p_blank())
+    xml.append(p_center_bold(f"{dados['autor_prefixo_assinatura']} {dados['autor_nome']}"))
+    xml.append(p_center(f"({dados['autor_partido_uf']})"))
+
+    return "".join(xml)
+
+
+def gerar_docx_requerimento(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
+    """Gera o .docx de um Requerimento de Urgência (art. 154/155 do RICD)."""
+    corpo = montar_paragrafos_corpo_requerimento(dados)
+    return _empacotar(corpo, template_path)

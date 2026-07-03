@@ -1,10 +1,15 @@
-# Gerador de PL — Gabinete Deputada Júlia Zanatta
+# Gerador de Documentos Legislativos — Gabinete Deputada Júlia Zanatta
 
-Sistema em Streamlit para montar Projetos de Lei dispositivo por dispositivo
-e gerar automaticamente o `.docx` no padrão do gabinete, com numeração e
-pontuação de acordo com a Lei Complementar nº 95/1998 (LC 95/98).
+Sistema em Streamlit com dois módulos, selecionáveis no topo da tela:
 
-## Como funciona
+1. **Projeto de Lei (PL)** — monta o PL dispositivo por dispositivo e gera o
+   `.docx` no padrão do gabinete, com numeração e pontuação de acordo com a
+   Lei Complementar nº 95/1998 (LC 95/98).
+2. **Requerimento de Urgência** — gera o requerimento de urgência (art. 154
+   ou 155 do RICD) para apreciação de uma matéria, preenchendo só os campos
+   variáveis (artigo, sigla, número/ano da matéria e ementa).
+
+## Módulo Projeto de Lei — como funciona
 
 1. Preencha os **dados gerais** na barra lateral (ano, autor, partido/UF).
 2. Escreva a **ementa**.
@@ -24,6 +29,22 @@ pontuação de acordo com a Lei Complementar nº 95/1998 (LC 95/98).
 4. Use as setas ↑ ↓ para reordenar e a lixeira para remover.
 5. Escreva a **justificação** (parágrafos separados por linha em branco).
 6. Clique em **Gerar Word (.docx)** e baixe o arquivo.
+
+## Módulo Requerimento de Urgência — como funciona
+
+1. Escolha **Requerimento de Urgência** no seletor do topo.
+2. Selecione o fundamento regimental (**art. 154** ou **155** do RICD) —
+   confirme com a assessoria qual se aplica ao caso concreto.
+3. Escolha a sigla da matéria (PL, PLP, PEC, PDL...) e informe o número/ano
+   (ex.: `2.548/2025`).
+4. Cole a ementa oficial da matéria — ela entra automaticamente entre aspas
+   no texto final, sem precisar digitar as aspas.
+5. Clique em **Gerar Word (.docx)**.
+
+O texto final segue exatamente o modelo do gabinete:
+
+> Requeremos, nos termos do art. \_\_\_ do Regimento Interno da Câmara dos
+> Deputados, urgência para apreciação do \_\_\_ \_\_\_, que "\_\_\_".
 
 ## Rodando localmente
 
