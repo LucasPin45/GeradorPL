@@ -13,22 +13,45 @@ Sistema em Streamlit com dois módulos, selecionáveis no topo da tela:
 
 1. Preencha os **dados gerais** na barra lateral (ano, autor, partido/UF).
 2. Escreva a **ementa**.
-3. Adicione os **dispositivos** um a um, na ordem do texto: Título, Capítulo,
-   Seção, Subseção, Artigo, Parágrafo, Inciso, Alínea, Item. Você digita só o
-   texto — a numeração ("Art. 1º", "§ 2º", "I –", "a)", "1.") e a pontuação
-   final (";", "; e", ":", ".") são calculadas automaticamente, seguindo os
-   arts. 10 a 12 da LC 95/98:
+3. Adicione os **dispositivos**: Título, Capítulo, Seção, Subseção, Artigo,
+   Parágrafo, Inciso, Alínea, Item. Você digita só o texto — a numeração
+   ("Art. 1º", "§ 2º", "I –", "a)", "1.") e a pontuação final (";", "; e",
+   ":", ".") são calculadas automaticamente, seguindo os arts. 10 a 12 da
+   LC 95/98:
    - Artigos numerados de forma ordinal até o 9º e cardinal a partir do 10º
      (ex.: "Art. 9º", depois "Art. 10.").
    - A mesma regra vale para parágrafos; se houver só um no artigo, vira
      "Parágrafo único." automaticamente.
    - Incisos em algarismos romanos, alíneas em letras minúsculas, itens em
      algarismos arábicos.
+   - Em listas dentro de listas (alíneas dentro de um inciso), a última
+     alínea recebe a pontuação que o inciso teria: ";", "; e" ou ".".
    - Use `**texto**` dentro de qualquer campo para deixar um trecho em
      negrito (útil na ementa, ao citar a lei alterada).
-4. Use as setas ↑ ↓ para reordenar e a lixeira para remover.
-5. Escreva a **justificação** (parágrafos separados por linha em branco).
-6. Clique em **Gerar Word (.docx)** e baixe o arquivo.
+4. **Texto da lei alterada**: quando um artigo altera outra lei ("O art. 5º
+   da Lei nº X passa a vigorar com a seguinte redação"), adicione logo depois
+   dele um dispositivo desse tipo e cole a nova redação entre aspas,
+   terminando em `(NR)`. Esse trecho sai sem numeração do projeto e sem
+   pontuação acrescentada; cada linha vira um parágrafo no Word.
+5. O novo dispositivo entra **no final do texto** ou **depois de** qualquer
+   dispositivo já adicionado — não é preciso refazer a lista para encaixar
+   um inciso no meio.
+6. As setas ↑ ↓ e a lixeira agem sobre o **bloco inteiro**: o Artigo leva
+   junto seus parágrafos, incisos e alíneas. Uma exclusão pode ser desfeita
+   em **Desfazer a última exclusão**.
+7. Escreva a **justificação** (parágrafos separados por linha em branco).
+8. A coluna da direita mostra o documento como vai sair e, abaixo dele, os
+   **avisos de técnica legislativa** (parágrafo sem artigo, lista de um item
+   só, artigo terminado em ":" sem incisos, falta da cláusula de vigência
+   etc.). Os avisos não impedem a geração do arquivo.
+9. Clique em **Baixar Word (.docx)**.
+
+### Rascunho
+
+O que é digitado fica só na aba do navegador e se perde se a página for
+recarregada. Em **Rascunho**, na barra lateral, **Salvar rascunho** baixa um
+arquivo `.json` com tudo (os dois módulos) e **Abrir rascunho** restaura o
+trabalho a partir dele — inclusive em outro computador.
 
 ## Módulo Requerimento de Urgência — como funciona
 
@@ -36,15 +59,17 @@ Sistema em Streamlit com dois módulos, selecionáveis no topo da tela:
 2. Selecione o fundamento regimental (**art. 154** ou **155** do RICD) —
    confirme com a assessoria qual se aplica ao caso concreto.
 3. Escolha a sigla da matéria (PL, PLP, PEC, PDL...) e informe o número/ano
-   (ex.: `2.548/2025`).
+   (ex.: `2.548/2025`). O texto usa "do" ou "da" conforme a sigla ("do PL",
+   "da PEC", "da MPV").
 4. Cole a ementa oficial da matéria — ela entra automaticamente entre aspas
-   no texto final, sem precisar digitar as aspas.
-5. Clique em **Gerar Word (.docx)**.
+   no texto final. Se a ementa colada já vier entre aspas ou com ponto
+   final, eles não são duplicados.
+5. Clique em **Baixar Word (.docx)**.
 
 O texto final segue exatamente o modelo do gabinete:
 
 > Requeremos, nos termos do art. \_\_\_ do Regimento Interno da Câmara dos
-> Deputados, urgência para apreciação do \_\_\_ \_\_\_, que "\_\_\_".
+> Deputados, urgência para apreciação do/da \_\_\_ \_\_\_, que "\_\_\_".
 
 ## Rodando localmente
 
@@ -53,9 +78,19 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Testes
+
+As regras de numeração, pontuação e geração do Word, e as operações do
+editor (inserir, mover, excluir, rascunho), têm testes automáticos:
+
+```bash
+pip install pytest
+python -m pytest -q
+```
+
 ## Deploy no Streamlit Community Cloud
 
-1. Suba esta pasta (`app.py`, `gerador.py`, `requirements.txt`,
+1. Suba esta pasta (`app.py`, `gerador.py`, `editor.py`, `requirements.txt`,
    `assets/template_gabinete.docx`) para um repositório no GitHub.
 2. Em https://share.streamlit.io, clique em "New app", aponte para o
    repositório e selecione `app.py` como arquivo principal.
@@ -67,7 +102,9 @@ streamlit run app.py
 
 ```
 app.py                          # interface Streamlit
-gerador.py                      # numeração LC 95/98 + geração do OOXML
+gerador.py                      # numeração e pontuação LC 95/98, avisos, geração do OOXML
+editor.py                       # inserir, mover e excluir dispositivos; salvar e abrir rascunho
+tests/                          # testes automáticos (pytest)
 assets/template_gabinete.docx   # modelo com estilos, cabeçalho e rodapé do gabinete
 requirements.txt
 ```

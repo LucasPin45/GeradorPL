@@ -20,11 +20,13 @@ Este módulo:
 import re
 import zipfile
 import io
-import copy
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional
 
-TEMPLATE_PATH = "assets/template_gabinete.docx"
+# Caminho relativo a este arquivo: funciona de qualquer pasta em que o app
+# seja iniciado (antes dependia de rodar a partir da raiz do repositório).
+TEMPLATE_PATH = str(Path(__file__).resolve().parent / "assets" / "template_gabinete.docx")
 
 # ---------------------------------------------------------------------------
 # Tipos de dispositivo e hierarquia (art. 10, V, LC 95/98)
@@ -32,18 +34,25 @@ TEMPLATE_PATH = "assets/template_gabinete.docx"
 
 TIPOS_ESTRUTURA = ["titulo", "capitulo", "secao", "subsecao"]
 TIPOS_CONTEUDO = ["artigo", "paragrafo", "inciso", "alinea", "item"]
+# Texto de lei alterada: o bloco entre aspas que vem depois de "passa a
+# vigorar com a seguinte redação:". Não é numerado nem pontuado pelo sistema
+# e não entra na contagem dos artigos do projeto.
+TIPO_CITACAO = "citacao"
+TIPOS_ENUMERACAO = ("inciso", "alinea", "item")
 
 # "profundidade" relativa usada para decidir se um dispositivo abre uma
 # sublista (e portanto deve terminar em ":") em relação ao próximo item.
 PROFUNDIDADE = {
     "titulo": 0, "capitulo": 0, "secao": 0, "subsecao": 0,
     "artigo": 1, "paragrafo": 2, "inciso": 3, "alinea": 4, "item": 5,
+    "citacao": 6,
 }
 
 ROTULOS = {
     "titulo": "Título", "capitulo": "Capítulo", "secao": "Seção",
     "subsecao": "Subseção", "artigo": "Artigo", "paragrafo": "Parágrafo",
     "inciso": "Inciso", "alinea": "Alínea", "item": "Item",
+    "citacao": "Texto da lei alterada",
 }
 
 
@@ -102,6 +111,94 @@ def numero_ordinal_cardinal(n: int, marcador: str) -> str:
 
 def _conector_sufixo(conector: str) -> str:
     return {"e": "; e", "ou": "; ou", "nenhum": ";"}.get(conector, "; e")
+
+
+# Caracteres que o XML 1.0 não aceita (aparecem ao colar texto do Word ou de
+# PDF) — um único deles deixava o .docx impossível de abrir.
+_XML_INVALIDO = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def limpar_texto(texto: str, manter_quebras: bool = False) -> str:
+    """Remove caracteres de controle e normaliza espaços. Quebras de linha
+    viram espaço, a não ser em blocos de texto citado (manter_quebras)."""
+    t = _XML_INVALIDO.sub(" ", (texto or "").replace("\r\n", "\n").replace("\r", "\n"))
+    if manter_quebras:
+        linhas = [re.sub(r"[ \t\u00a0]+", " ", l).strip() for l in t.split("\n")]
+        return "\n".join(l for l in linhas if l)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _ja_pontuado(texto: str) -> bool:
+    """True se o usuário já encerrou o texto e o sistema não deve acrescentar
+    nada: pontuação final, "; e" / "; ou" digitados, aspas de fechamento ou a
+    marca "(NR)" de dispositivo com nova redação."""
+    t = texto.rstrip()
+    if re.search(r"[.;:,?!]$", t):
+        return True
+    if re.search(r"[;,]\s*(e|ou)$", t, re.IGNORECASE):
+        return True
+    if re.search(r"\(NR\)$", t, re.IGNORECASE):
+        return True
+    return t.endswith(("”", '"'))
+
+
+def _abre_sublista(dispositivos: List["Dispositivo"], idx: int) -> bool:
+    """O próximo dispositivo é um item de enumeração mais profundo: o texto
+    atual anuncia uma lista e termina em dois-pontos."""
+    if idx + 1 >= len(dispositivos):
+        return False
+    prox = dispositivos[idx + 1]
+    return prox.tipo in TIPOS_ENUMERACAO and PROFUNDIDADE[prox.tipo] > PROFUNDIDADE[dispositivos[idx].tipo]
+
+
+def _proximo_irmao(dispositivos: List["Dispositivo"], idx: int) -> Optional[int]:
+    """Próximo item da mesma enumeração (mesmo nível, mesmo "pai"), pulando
+    os subitens que estiverem no meio. None se a enumeração termina aqui."""
+    prof = PROFUNDIDADE[dispositivos[idx].tipo]
+    for j in range(idx + 1, len(dispositivos)):
+        t = dispositivos[j].tipo
+        if t in TIPOS_ESTRUTURA or t == TIPO_CITACAO or PROFUNDIDADE[t] < prof:
+            return None
+        if PROFUNDIDADE[t] == prof:
+            return j
+    return None
+
+
+def _pai(dispositivos: List["Dispositivo"], idx: int) -> Optional[int]:
+    """Dispositivo ao qual este está subordinado (o anterior mais raso)."""
+    prof = PROFUNDIDADE[dispositivos[idx].tipo]
+    for j in range(idx - 1, -1, -1):
+        t = dispositivos[j].tipo
+        if t in TIPOS_ESTRUTURA or t == TIPO_CITACAO:
+            return None
+        if PROFUNDIDADE[t] < prof:
+            return j
+    return None
+
+
+def _fim_de_enumeracao(dispositivos: List["Dispositivo"], idx: int, conector: str) -> str:
+    """
+    Pontuação final de um inciso, alínea ou item que não abre sublista:
+      - ";" no meio da enumeração;
+      - "; e" / "; ou" no penúltimo;
+      - no último, depende de onde a enumeração está: "." se ela encerra o
+        artigo ou parágrafo; se está dentro de outra enumeração que continua,
+        herda a pontuação que o item de cima teria. Assim, a última alínea de
+        um inciso que não é o último termina em ";", e não em ponto final:
+            I – os servidores:
+            a) ativos; e
+            b) inativos;
+            II – os militares.
+    """
+    irmao = _proximo_irmao(dispositivos, idx)
+    if irmao is None:
+        pai = _pai(dispositivos, idx)
+        if pai is not None and dispositivos[pai].tipo in TIPOS_ENUMERACAO:
+            return _fim_de_enumeracao(dispositivos, pai, conector)
+        return "."
+    if _proximo_irmao(dispositivos, irmao) is None and conector != "nenhum":
+        return _conector_sufixo(conector)
+    return ";"
 
 
 def processar_dispositivos(dispositivos: List[Dispositivo], conector: str = "e"):
@@ -200,42 +297,19 @@ def processar_dispositivos(dispositivos: List[Dispositivo], conector: str = "e")
             modo = "enum"
 
         # --- pontuação automática ---
-        texto = d.texto.rstrip()
-        if d.pontuacao_automatica and texto:
-            prof_atual = PROFUNDIDADE[tipo]
-            prox = dispositivos[idx + 1] if idx + 1 < n else None
-            # ":" só cabe quando o próximo dispositivo é uma enumeração
-            # (inciso/alínea/item) mais profunda — um parágrafo após um
-            # artigo NÃO é enumeração, então o caput termina em "."
-            abre_sublista = (
-                prox is not None
-                and prox.tipo in ("inciso", "alinea", "item")
-                and PROFUNDIDADE[prox.tipo] > prof_atual
-            )
-
-            # já termina com pontuação explícita? respeita se usuário colocou
-            ja_pontuado = bool(re.search(r'[.;:,]$', texto)) or texto.endswith(("º", "”", '"'))
-
-            if not ja_pontuado:
-                if abre_sublista:
+        if tipo == TIPO_CITACAO:
+            modo = "citacao"
+            texto = limpar_texto(d.texto, manter_quebras=True)
+        else:
+            texto = limpar_texto(d.texto)
+            if d.pontuacao_automatica and texto and not _ja_pontuado(texto):
+                prox = dispositivos[idx + 1] if idx + 1 < n else None
+                if prox is not None and prox.tipo == TIPO_CITACAO:
+                    texto += ":"      # "…passa a vigorar com a seguinte redação:"
+                elif _abre_sublista(dispositivos, idx):
                     texto += ":"
                 elif modo == "enum":
-                    # é item de enumeração (inciso/alínea/item): decide ; / ; e / .
-                    eh_ultimo_da_serie = (
-                        prox is None or PROFUNDIDADE[prox.tipo] != prof_atual
-                    )
-                    eh_penultimo_da_serie = False
-                    if not eh_ultimo_da_serie:
-                        prox2 = dispositivos[idx + 2] if idx + 2 < n else None
-                        eh_penultimo_da_serie = (
-                            prox2 is None or PROFUNDIDADE[prox2.tipo] != prof_atual
-                        )
-                    if eh_ultimo_da_serie:
-                        texto += "."
-                    elif eh_penultimo_da_serie and conector != "nenhum":
-                        texto += _conector_sufixo(conector)
-                    else:
-                        texto += ";"
+                    texto += _fim_de_enumeracao(dispositivos, idx, conector)
                 else:
                     # artigo, parágrafo (sem sublista): frase normal -> ponto final
                     texto += "."
@@ -245,10 +319,80 @@ def processar_dispositivos(dispositivos: List[Dispositivo], conector: str = "e")
             "modo": modo,
             "prefixo": prefixo,
             "texto": texto,
-            "titulo_estrutura": d.titulo_estrutura.strip().upper() if tipo in ("titulo", "capitulo") else d.titulo_estrutura.strip(),
+            "titulo_estrutura": (limpar_texto(d.titulo_estrutura).upper() if tipo in ("titulo", "capitulo")
+                                 else limpar_texto(d.titulo_estrutura)),
         })
 
     return resultado
+
+
+# ---------------------------------------------------------------------------
+# Verificação da estrutura (avisos — não impedem gerar o documento)
+# ---------------------------------------------------------------------------
+
+_PAIS_VALIDOS = {
+    "paragrafo": ("artigo",),
+    "inciso": ("artigo", "paragrafo"),
+    "alinea": ("inciso",),
+    "item": ("alinea",),
+}
+_NOMES = {"artigo": "um Artigo", "paragrafo": "um Parágrafo", "inciso": "um Inciso", "alinea": "uma Alínea"}
+
+
+def verificar_estrutura(dispositivos: List[Dispositivo], conector: str = "e") -> List[Dict[str, str]]:
+    """
+    Aponta problemas de técnica legislativa na sequência de dispositivos.
+    Devolve [{"uid": ..., "rotulo": "Art. 2º", "aviso": "..."}], na ordem do
+    texto; "uid" vazio quando o aviso é sobre o projeto como um todo.
+    """
+    avisos: List[Dict[str, str]] = []
+    if not dispositivos:
+        return avisos
+    processados = processar_dispositivos(dispositivos, conector)
+
+    def _rotulo(i: int) -> str:
+        return processados[i]["prefixo"].rstrip(" –.") or ROTULOS[dispositivos[i].tipo]
+
+    def _aviso(i: int, texto: str) -> None:
+        avisos.append({"uid": dispositivos[i].uid, "rotulo": _rotulo(i), "aviso": texto})
+
+    for i, d in enumerate(dispositivos):
+        conteudo = d.titulo_estrutura if d.tipo in TIPOS_ESTRUTURA else d.texto
+        if not limpar_texto(conteudo):
+            _aviso(i, "está sem texto.")
+
+        if d.tipo in _PAIS_VALIDOS:
+            pai = _pai(dispositivos, i)
+            aceitos = _PAIS_VALIDOS[d.tipo]
+            if pai is None or dispositivos[pai].tipo not in aceitos:
+                esperado = " ou ".join(_NOMES[t] for t in aceitos)
+                _aviso(i, f"precisa vir depois de {esperado} — do jeito que está, não pertence a nenhum.")
+
+        if d.tipo == TIPO_CITACAO and (i == 0 or dispositivos[i - 1].tipo in TIPOS_ESTRUTURA):
+            _aviso(i, "o texto da lei alterada precisa vir depois do Artigo que anuncia a alteração.")
+
+        if d.tipo in TIPOS_ENUMERACAO:
+            anterior_e_irmao = any(_proximo_irmao(dispositivos, j) == i for j in range(i))
+            if not anterior_e_irmao and _proximo_irmao(dispositivos, i) is None:
+                _aviso(i, "é o único item da lista. Uma enumeração com um item só costuma caber no próprio "
+                          "texto do dispositivo de cima.")
+
+        if d.tipo in ("artigo", "paragrafo") + TIPOS_ENUMERACAO:
+            texto = limpar_texto(d.texto)
+            seguinte = dispositivos[i + 1] if i + 1 < len(dispositivos) else None
+            anuncia = texto.endswith(":")
+            tem_lista = seguinte is not None and (seguinte.tipo == TIPO_CITACAO or _abre_sublista(dispositivos, i))
+            if anuncia and not tem_lista:
+                _aviso(i, "termina em dois-pontos, mas não há lista nem texto citado logo depois.")
+
+    artigos = [d for d in dispositivos if d.tipo == "artigo"]
+    if not artigos:
+        avisos.append({"uid": "", "rotulo": "Projeto", "aviso": "ainda não tem nenhum Artigo."})
+    elif not any(re.search(r"entra(m|rá|rão)? em vigor", limpar_texto(d.texto), re.IGNORECASE) for d in artigos):
+        avisos.append({"uid": "", "rotulo": "Projeto",
+                       "aviso": "não tem cláusula de vigência (ex.: \"Esta Lei entra em vigor na data de sua "
+                                "publicação\"), que costuma ser o último Artigo."})
+    return avisos
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +400,8 @@ def processar_dispositivos(dispositivos: List[Dispositivo], conector: str = "e")
 # ---------------------------------------------------------------------------
 
 def esc(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = _XML_INVALIDO.sub(" ", s or "")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def build_runs(text: str, force_bold: bool = False) -> str:
@@ -356,6 +501,14 @@ def p_justificacao_paragrafo(text: str) -> str:
 # Montagem completa do documento
 # ---------------------------------------------------------------------------
 
+def paragrafos_justificacao(justificativa: str) -> List[str]:
+    """Parágrafos da justificação: separados por linha em branco; quebras
+    simples dentro de um parágrafo viram espaço. Usado pelo Word e pela
+    pré-visualização, para os dois mostrarem a mesma coisa."""
+    texto = (justificativa or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [limpar_texto(p) for p in re.split(r"\n\s*\n", texto) if p.strip()]
+
+
 def montar_paragrafos_corpo(dados: dict) -> str:
     xml = []
 
@@ -365,7 +518,7 @@ def montar_paragrafos_corpo(dados: dict) -> str:
     xml.append(p_blank())
     xml.append(p_blank())
     xml.append(p_blank())
-    xml.append(p_ementa(dados["ementa"]))
+    xml.append(p_ementa(limpar_texto(dados["ementa"])))
     xml.append(p_blank())
     xml.append(p_blank())
     xml.append(p_decreta("O Congresso Nacional decreta:"))
@@ -380,6 +533,10 @@ def montar_paragrafos_corpo(dados: dict) -> str:
             if item["titulo_estrutura"]:
                 xml.append(p_heading(item["titulo_estrutura"]))
             xml.append(p_blank())
+        elif tipo == TIPO_CITACAO:
+            # texto de lei alterada: cada linha digitada vira um parágrafo
+            for linha in item["texto"].split("\n"):
+                xml.append(p_conteudo("", linha))
         else:
             xml.append(p_conteudo(item["prefixo"], item["texto"]))
 
@@ -389,12 +546,8 @@ def montar_paragrafos_corpo(dados: dict) -> str:
     xml.append(p_blank())
     xml.append(p_justificacao_header())
 
-    justificativa = dados.get("justificativa", "").strip()
-    if justificativa:
-        paragrafos = [p.strip() for p in re.split(r'\n\s*\n', justificativa) if p.strip()]
-        for par in paragrafos:
-            par_limpo = re.sub(r'\s*\n\s*', ' ', par)
-            xml.append(p_justificacao_paragrafo(par_limpo))
+    for par in paragrafos_justificacao(dados.get("justificativa", "")):
+        xml.append(p_justificacao_paragrafo(par))
 
     xml.append(p_blank())
     xml.append(p_center(dados.get("local_data", "Sala das Sessões, na data de sua assinatura.")))
@@ -456,13 +609,43 @@ def gerar_docx(dados: dict, template_path: str = TEMPLATE_PATH) -> bytes:
 # Módulo: Requerimento de Urgência (art. 154/155 do RICD)
 # ---------------------------------------------------------------------------
 
+# Siglas de proposições de gênero feminino ("da PEC", "da Medida Provisória")
+_SIGLAS_FEMININAS = {"PEC", "MPV", "MP", "INC", "MSC", "EMC", "EMP"}
+
+
+def artigo_da_sigla(sigla: str) -> str:
+    """ "do" ou "da", conforme a proposição: "do PL", "da PEC", "da MPV"."""
+    return "da" if (sigla or "").strip().upper() in _SIGLAS_FEMININAS else "do"
+
+
+def limpar_ementa_citada(ementa: str) -> str:
+    """Ementa colada pelo usuário, pronta para ficar entre aspas: sem as aspas
+    e sem o ponto final (o ponto vem depois das aspas de fechamento)."""
+    t = limpar_texto(ementa).strip(' "“”\'')
+    return t.rstrip(". ").strip()
+
+
 def ementa_requerimento_urgencia(artigo_ricd: str, sigla_materia: str, numero_materia: str) -> str:
     """Ementa padrão, preenchida automaticamente a partir dos campos do
     formulário — mesmo texto que aparece no bloco de ementa, no estilo PL."""
-    numero = numero_materia.strip() or "____/____"
+    numero = limpar_texto(numero_materia) or "____/____"
+    sigla = limpar_texto(sigla_materia).upper() or "____"
     return (
         f"Requer, nos termos do art. {artigo_ricd} do Regimento Interno da "
-        f"Câmara dos Deputados, urgência para apreciação do {sigla_materia} {numero}."
+        f"Câmara dos Deputados, urgência para apreciação {artigo_da_sigla(sigla)} {sigla} {numero}."
+    )
+
+
+def texto_requerimento_urgencia(artigo_ricd: str, sigla_materia: str, numero_materia: str,
+                                ementa_materia: str) -> str:
+    """Corpo do requerimento. Usado pelo Word e pela pré-visualização."""
+    numero = limpar_texto(numero_materia) or "____/____"
+    sigla = limpar_texto(sigla_materia).upper() or "____"
+    ementa = limpar_ementa_citada(ementa_materia) or "(a ementa da matéria aparecerá aqui)"
+    return (
+        f"Requeremos, nos termos do art. {artigo_ricd} do Regimento Interno da Câmara "
+        f"dos Deputados, urgência para apreciação {artigo_da_sigla(sigla)} {sigla} {numero}, que "
+        f'"{ementa}".'
     )
 
 
@@ -484,12 +667,7 @@ def montar_paragrafos_corpo_requerimento(dados: dict) -> str:
     xml.append(p_conteudo("", "Senhor Presidente,"))
     xml.append(p_blank())
 
-    texto = (
-        f"Requeremos, nos termos do art. {artigo} do Regimento Interno da Câmara "
-        f"dos Deputados, urgência para apreciação do {sigla} {numero}, que "
-        f'"{ementa_materia}".'
-    )
-    xml.append(p_conteudo("", texto))
+    xml.append(p_conteudo("", texto_requerimento_urgencia(artigo, sigla, numero, ementa_materia)))
 
     xml.append(p_blank())
     xml.append(p_blank())
